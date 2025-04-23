@@ -14,7 +14,7 @@ class URLValidator:
     
     # URL patterns for different platforms
     PATTERNS = {
-        MediaService.INSTAGRAM: r'(?:https?:\/\/)?(?:www\.)?instagram\.com(?:\/[^\/]+)?\/(?:p|reel)\/([^\/?#&]+)',
+        MediaService.INSTAGRAM: r'(?:https?:\/\/)?(?:www\.)?instagram\.com(?:\/[^\/]+)?\/(?:p|reel|share)\/([^\/?#&]+)',
         MediaService.TIKTOK: r'(?:https?:\/\/)?(?:www\.|vm\.|vt\.)?tiktok\.com\/(?:@[\w.-]+\/video\/\d+|[\w.-]+)',
         MediaService.YOUTUBE: r'(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:shorts\/|watch\?v=)|youtu\.be\/)([a-zA-Z0-9_-]+)',
         MediaService.TWITTER: r'(?:https?:\/\/)?(?:www\.)?(?:twitter\.com|x\.com)\/(?:\w+)\/status\/(\d+)'
@@ -39,4 +39,4 @@ class URLValidator:
             return None
             
         match = re.match(pattern, url)
-        return match.group(1) if match else None 
+        return match.group(1) if match else None
