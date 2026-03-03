@@ -2,13 +2,15 @@ import os
 import tempfile
 from pathlib import Path
 import yt_dlp
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 import logging
 import httpx
 from .cobalt_client import CobaltClient
 import re
 
 logger = logging.getLogger(__name__)
+
+IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp'}
 
 class MediaDownloader:
     """Handles media downloads from various platforms using yt-dlp"""
@@ -19,7 +21,7 @@ class MediaDownloader:
     
     def __init__(self):
         self.base_opts = {
-            'format': 'best[ext=mp4]',
+            'format': 'best[ext=mp4]/best',
             'outtmpl': str(Path(tempfile.gettempdir()) / '%(extractor)s_%(id)s.%(ext)s'),
             'max_filesize': self.MAX_FILE_SIZE,
         }
@@ -43,8 +45,21 @@ class MediaDownloader:
         clean_title = re.sub(r'[^\w\s,.!?-]', '', title)
         # Replace multiple spaces with single space
         clean_title = re.sub(r'\s+', ' ', clean_title).strip()
-        return clean_title[:self.MAX_TITLE_LENGTH] if clean_title else 'video'
-    
+        return clean_title[:self.MAX_TITLE_LENGTH] if clean_title else 'media'
+
+    async def _fetch_file(self, url: str, filename: str) -> Optional[str]:
+        """Download a file from a direct URL, return local path or None."""
+        try:
+            temp_file = Path(tempfile.gettempdir()) / filename
+            async with httpx.AsyncClient(follow_redirects=True, timeout=60) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                temp_file.write_bytes(response.content)
+            return str(temp_file)
+        except Exception as e:
+            logger.error(f"Error fetching file {filename}: {str(e)}")
+            return None
+
     async def _download_with_ytdl(self, url: str, opts: Dict) -> Optional[Dict]:
         """Generic yt-dlp download handler"""
         try:
@@ -62,10 +77,42 @@ class MediaDownloader:
                     'title': self._sanitize_title(info.get('title', 'video')),
                     'duration': info.get('duration'),
                     'thumbnail': info.get('thumbnail'),
+                    'uploader': info.get('uploader'),
                 }
                 
         except Exception as e:
             logger.error(f"Error downloading from {url}: {str(e)}")
+            return None
+
+    async def _download_tiktok_slideshow(self, url: str) -> Optional[Dict]:
+        """Fallback for TikTok image slideshows."""
+        try:
+            out_template = str(
+                Path(tempfile.gettempdir()) / 'tiktok_%(id)s_%(autonumber)s.%(ext)s'
+            )
+            opts = {**self.base_opts, 'outtmpl': out_template, 'format': 'best'}
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                post_id = info.get('id', '')
+                tmp = Path(tempfile.gettempdir())
+                files = (
+                    sorted(tmp.glob(f'tiktok_{post_id}_*.jpg')) +
+                    sorted(tmp.glob(f'tiktok_{post_id}_*.png')) +
+                    sorted(tmp.glob(f'tiktok_{post_id}_*.webp')) +
+                    sorted(tmp.glob(f'tiktok_{post_id}_*.mp4'))
+                )
+                if not files:
+                    return None
+                base = {
+                    'title': self._sanitize_title(info.get('title', 'tiktok')),
+                    'uploader': info.get('uploader'),
+                    'thumbnail': info.get('thumbnail'),
+                }
+                if len(files) == 1:
+                    return {**base, 'file_path': str(files[0]), 'duration': info.get('duration')}
+                return {**base, 'files': [str(f) for f in files], 'duration': None}
+        except Exception as e:
+            logger.error(f"Error downloading TikTok slideshow: {str(e)}")
             return None
 
     async def download_youtube(self, url: str) -> Optional[Dict]:
@@ -77,42 +124,84 @@ class MediaDownloader:
             
     async def download_tiktok(self, url: str) -> Optional[Dict]:
         """Download TikTok video"""
-        return await self._download_with_ytdl(url, self.base_opts)
+        result = await self._download_with_ytdl(url, self.base_opts)
+        if result and Path(result['file_path']).exists():
+            return result
+        logger.info("Standard TikTok download failed, trying slideshow mode")
+        return await self._download_tiktok_slideshow(url)
 
     async def download_twitter(self, url: str) -> Optional[Dict]:
         """Download Twitter/X video"""
         result = await self._download_with_ytdl(url, self.base_opts)
         if result:
-            # Improve Twitter titles
-            title = result['title']
+            title = result.get('title', '')
             if not title or title == 'Twitter':
-                info = await self._download_with_ytdl(url, {'extract_flat': True})
-                uploader = info.get('uploader', 'unknown') if info else 'unknown'
+                uploader = result.get('uploader', 'unknown')
                 result['title'] = self._sanitize_title(f"Twitter_video_by_{uploader}")
         return result
 
     async def download_instagram(self, url: str) -> Optional[Dict]:
-        """Download Instagram media using Cobalt API"""
+        """
+        Download Instagram media via Cobalt API.
+        Returns either:
+          {'file_path': str, ...}            — single video or image
+          {'files': [str, str, ...], ...}    — carousel
+        """
         try:
-            media_info = await self.cobalt_client.get_media_url(url)
-            if not media_info:
-                raise ValueError("Failed to get media URL from Cobalt API")
-            
-            temp_file = Path(tempfile.gettempdir()) / media_info['filename']
-            
-            async with httpx.AsyncClient() as client:
-                response = await client.get(media_info['url'])
-                response.raise_for_status()
-                # Use synchronous write since we're writing the entire content at once
-                temp_file.write_bytes(response.content)
-            
-            return {
-                'file_path': str(temp_file),
-                'title': self._sanitize_title(temp_file.stem),
-                'duration': None,
-                'thumbnail': None
-            }
-                
+            data = await self.cobalt_client.get_media_info(url)
+            if not data:
+                raise ValueError("Failed to get media info from Cobalt API")
+
+            status = data.get('status', '')
+
+            # Carousel
+            if status == 'picker':
+                items = data.get('picker', [])
+                if not items:
+                    raise ValueError("Cobalt returned picker with no items")
+
+                downloaded: List[str] = []
+                for i, item in enumerate(items):
+                    item_url = item.get('url')
+                    if not item_url:
+                        continue
+                    ext = 'mp4' if item.get('type') == 'video' else 'jpg'
+                    fp = await self._fetch_file(item_url, f'instagram_carousel_{i}.{ext}')
+                    if fp:
+                        downloaded.append(fp)
+
+                if not downloaded:
+                    raise ValueError("Failed to download any carousel items")
+
+                if len(downloaded) == 1:
+                    return {
+                        'file_path': downloaded[0],
+                        'title': 'Instagram post',
+                        'duration': None, 'thumbnail': None, 'uploader': None,
+                    }
+                return {
+                    'files': downloaded,
+                    'title': 'Instagram carousel',
+                    'duration': None, 'thumbnail': None, 'uploader': None,
+                }
+
+            # Single file
+            if status in ('redirect', 'tunnel'):
+                single_url = data.get('url')
+                if not single_url:
+                    raise ValueError("Cobalt response missing URL")
+                filename = data.get('filename', 'instagram_media')
+                fp = await self._fetch_file(single_url, filename)
+                if not fp:
+                    raise ValueError("Failed to download media file")
+                return {
+                    'file_path': fp,
+                    'title': self._sanitize_title(Path(filename).stem),
+                    'duration': None, 'thumbnail': None, 'uploader': None,
+                }
+
+            raise ValueError(f"Unexpected Cobalt status: {status}")
+
         except Exception as e:
             logger.error(f"Error downloading Instagram media: {str(e)}")
             return None
@@ -125,6 +214,10 @@ class MediaDownloader:
                 path.unlink()
         except Exception as e:
             logger.error(f"Error cleaning up file {file_path}: {str(e)}")
+            
+    def cleanup_files(self, file_paths: List[str]) -> None:
+        for fp in file_paths:
+            self.cleanup(fp)
 
     async def __aenter__(self):
         return self
