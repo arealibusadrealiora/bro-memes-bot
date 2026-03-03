@@ -1,7 +1,7 @@
 import os
 import httpx
 import logging
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -42,17 +42,14 @@ class CobaltClient:
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
-    
-    async def get_media_url(self, url: str, video_quality: str = '1080') -> Optional[Dict[str, str]]:
+
+    async def get_media_info(self, url: str) -> Optional[Dict]:
         """
-        Get direct media URL from Cobalt API
-        
-        Args:
-            url: Social media URL to process
-            video_quality: Quality of video (144-4320, max). Default 1080
-            
-        Returns:
-            Dict with 'url' and 'filename' if successful, None otherwise
+        Get raw Cobalt API response for a URL.
+        Possible response shapes:
+          {"status": "redirect"|"tunnel", "url": "...", "filename": "..."}
+          {"status": "picker", "picker": [{"type": "photo"|"video", "url": "..."}], "filename": "..."}
+          {"status": "error", "error": {"code": "...", "context": ...}}
         """
         try:
             client = await self._get_client()
@@ -62,41 +59,23 @@ class CobaltClient:
                 # 'filenameStyle': 'pretty',  # More readable filenames
                 'downloadMode': 'auto',     # Download both video and audio
             }
-            
             response = await client.post(self.base_url, json=payload)
-
             logger.info(f"Cobalt API response: {response.text}")
             logger.info(f"Cobalt API response headers: {response.headers}")
             logger.info(response)
             response.raise_for_status()
             data = response.json()
-            
-            if data.get('status') == 'redirect':
-                return {
-                    'url': data['url'],
-                    'filename': data.get('filename', 'video.mp4')
-                }
-            elif data.get('status') == 'error':
+
+            if data.get('status') == 'error':
                 error = data.get('error', {})
                 logger.error(
                     f"Cobalt API error: {error.get('code')} "
                     f"Context: {error.get('context')}"
                 )
                 return None
-            elif data.get('status') == 'picker':
-                # For posts with multiple media, take the first video/photo
-                for item in data.get('picker', []):
-                    if item.get('type') in ('video', 'photo'):
-                        return {
-                            'url': item['url'],
-                            'filename': data.get('filename', 'media.mp4')
-                        }
-                logger.error("No suitable media found in picker response")
-                return None
-            else:
-                logger.error(f"Unexpected Cobalt API response: {data}")
-                return None
-                
+
+            return data
+
         except httpx.RequestError as e:
             logger.error(f"Error making request to Cobalt API: {str(e)}")
             return None
