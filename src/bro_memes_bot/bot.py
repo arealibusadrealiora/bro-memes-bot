@@ -2,7 +2,7 @@ import os
 import logging
 from pathlib import Path
 from dotenv import load_dotenv
-from telegram import Update, Chat, constants
+from telegram import Update, Chat, constants, InputMediaPhoto, InputMediaVideo
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from .utils.url_validator import URLValidator, MediaService
 from .utils.downloader import MediaDownloader
@@ -22,6 +22,68 @@ logger = logging.getLogger(__name__)
 # Initialize downloader
 downloader = MediaDownloader()
 
+IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp'}
+
+def _is_image(path: str) -> bool:
+    return Path(path).suffix.lower() in IMAGE_EXTENSIONS
+
+def _build_caption(result: dict) -> str:
+    caption = f"\U0001f3a5 {result['title']}"
+    if result.get('uploader'):
+        caption += f"\n\U0001f464 {result['uploader']}"
+    if result.get('duration'):
+        try:
+            d = float(result['duration'])
+            caption += f"\n\u23f1 {int(d // 60)}:{int(d % 60):02d}"
+        except (TypeError, ValueError):
+            pass
+    return caption
+
+async def _send_media(update: Update, context, chat_id: int, result: dict) -> None:
+    """Route result to the correct Telegram send method."""
+    caption = _build_caption(result)
+    files = result.get('files')  # present only for carousels
+
+    # Carousel
+    if files and len(files) > 1:
+        await context.bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.UPLOAD_PHOTO)
+        media_group = []
+        handles = []
+        for i, fp in enumerate(files):
+            fh = open(fp, 'rb')
+            handles.append((fh, fp))
+            kw = {'caption': caption} if i == 0 else {}
+            if _is_image(fp):
+                media_group.append(InputMediaPhoto(media=fh, **kw))
+            else:
+                media_group.append(InputMediaVideo(media=fh, supports_streaming=True, **kw))
+        try:
+            await update.message.reply_media_group(media=media_group)
+        finally:
+            for fh, fp in handles:
+                fh.close()
+                downloader.cleanup(fp)
+        return
+
+    # Single file
+    file_path = result.get('file_path') or (files[0] if files else None)
+    if not file_path:
+        raise ValueError("No file path in result")
+
+    with open(file_path, 'rb') as f:
+        if _is_image(file_path):
+            await context.bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.UPLOAD_PHOTO)
+            await update.message.reply_photo(photo=f, caption=caption)
+        else:
+            await context.bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.UPLOAD_VIDEO)
+            await update.message.reply_video(
+                video=f, caption=caption,
+                supports_streaming=True,
+                write_timeout=120, read_timeout=60, connect_timeout=None
+            )
+    downloader.cleanup(file_path)
+
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
     # Only respond to /start in private chats
@@ -38,6 +100,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "And I'll send the media back to you!"
     )
 
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /help is issued."""
     # Only respond to /help in private chats
@@ -53,11 +116,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• Twitter Media"
     )
 
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle incoming messages."""
     message_text = update.message.text
     chat_id = update.message.chat_id
-    
+
     # Quick check if message contains any supported URL
     is_valid, service = URLValidator.validate_url(message_text)
     
@@ -73,84 +137,41 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
         return
         
+    status_message = None
+    result = None
+
     try:
-        # Show typing action while processing
-        await context.bot.send_chat_action(
-            chat_id=chat_id, 
-            action=constants.ChatAction.TYPING
-        )
-        
+        await context.bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.TYPING)
+
         if service == MediaService.TWITTER:
             result = await downloader.download_twitter(message_text)
-            
-            if result:
-                status_message = await update.message.reply_text("📥 Downloading Twitter media...")
-            else:
+            if not result:
                 fixed_url = message_text.replace("twitter.com", "fixupx.com").replace("x.com", "fixupx.com")
                 await update.message.reply_text(
                     f"No downloadable media found. Here's a better link:\n{fixed_url}"
                 )
                 return
+            status_message = await update.message.reply_text("📥 Downloading Twitter media...")
         else:
-            status_message = await update.message.reply_text(
-                f"⏳ Processing {service.value} link..."
-            )
-            
+            status_message = await update.message.reply_text(f"⏳ Processing {service.value} link...")
             if service == MediaService.YOUTUBE:
                 await status_message.edit_text("📥 Downloading YouTube video...")
                 result = await downloader.download_youtube(message_text)
             elif service == MediaService.TIKTOK:
-                await status_message.edit_text("📥 Downloading TikTok video...")
+                await status_message.edit_text("📥 Downloading TikTok media...")
                 result = await downloader.download_tiktok(message_text)
             elif service == MediaService.INSTAGRAM:
                 await status_message.edit_text("📥 Downloading Instagram media...")
                 result = await downloader.download_instagram(message_text)
-            
+
         if not result:
             await status_message.edit_text("❌ Failed to download media")
             return
-            
+
         await status_message.edit_text("📤 Uploading to Telegram...")
-        
-        # Show upload video action while uploading
-        await context.bot.send_chat_action(
-            chat_id=chat_id, 
-            action=constants.ChatAction.UPLOAD_VIDEO
-        )
-        
-        # Create caption
-        caption = f"🎥 {result['title']}"
-        if result.get('uploader'):
-            caption += f"\n👤 {result['uploader']}"
-        if result.get('duration'):
-            try:
-                duration = float(result['duration'])
-                minutes = int(duration // 60)
-                seconds = int(duration % 60)
-                caption += f"\n⏱ {minutes}:{seconds:02d}"
-            except (TypeError, ValueError):
-                pass
-        
-        # Send video with periodic upload status updates
-        with open(result['file_path'], 'rb') as video_file:
-            # Send another upload action as the previous one might have expired
-            await context.bot.send_chat_action(
-                chat_id=chat_id, 
-                action=constants.ChatAction.UPLOAD_VIDEO
-            )
-            await update.message.reply_video(
-                video=video_file,
-                caption=caption,
-                supports_streaming=True,
-                write_timeout=120,
-                read_timeout=60,
-                connect_timeout=None
-            )
-        
-        # Cleanup
-        downloader.cleanup(result['file_path'])
+        await _send_media(update, context, chat_id, result)
         await status_message.delete()
-            
+
     except Exception as e:
         logger.error(f"Error processing {service.value} link: {str(e)}")
         if service == MediaService.TWITTER:
@@ -159,15 +180,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 f"❌ Couldn't download media. Here's a better link:\n{fixed_url}"
             )
         elif service == MediaService.INSTAGRAM and "login required" in str(e).lower():
-            await status_message.edit_text(
-                "❌ Instagram login required.\n"
-                "Please contact bot administrator to configure Instagram authentication."
-            )
+            if status_message:
+                await status_message.edit_text(
+                    "❌ Instagram login required.\n"
+                    "Please contact bot administrator to configure Instagram authentication."
+                )
         else:
-            await status_message.edit_text(
-                f"❌ Error processing {service.value} link.\n"
-                f"Error: {str(e)}"
-            )
+            if status_message:
+                await status_message.edit_text(
+                    f"❌ Error processing {service.value} link.\nError: {str(e)}"
+                )
+
 
 def main() -> None:
     """Start the bot."""
