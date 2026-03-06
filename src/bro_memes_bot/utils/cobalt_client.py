@@ -68,10 +68,17 @@ class CobaltClient:
 
             if data.get('status') == 'error':
                 error = data.get('error', {})
+                error_code = error.get('code', '')
                 logger.error(
-                    f"Cobalt API error: {error.get('code')} "
+                    f"Cobalt API error: {error_code} "
                     f"Context: {error.get('context')}"
                 )
+                # Check if it's a rate limit or fetch error
+                if 'fetch' in error_code or 'rate' in error_code:
+                    logger.warning(
+                        "Instagram may have rate-limited this IP. "
+                        "Consider using a proxy or Instagram credentials in .netrc"
+                    )
                 return None
 
             return data
