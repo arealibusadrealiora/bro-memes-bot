@@ -204,9 +204,17 @@ class MediaDownloader:
                 result['title'] = self._sanitize_title(f"Twitter_video_by_{uploader}")
         return result
 
+    async def _download_instagram_via_ytdlp(self, url: str) -> Optional[Dict]:
+        """Fallback method to download Instagram media using yt-dlp (for single images)"""
+        try:
+            return await self._download_with_ytdl(url, self.base_opts)
+        except Exception as e:
+            logger.error(f"Error downloading Instagram via yt-dlp: {str(e)}")
+            return None
+
     async def download_instagram(self, url: str) -> Optional[Dict]:
         """
-        Download Instagram media via Cobalt API.
+        Download Instagram media via Cobalt API (videos, carousels) or yt-dlp fallback (single images).
         Returns either:
           {'file_path': str, ...}            — single video or image
           {'files': [str, str, ...], ...}    — carousel
@@ -267,8 +275,10 @@ class MediaDownloader:
             raise ValueError(f"Unexpected Cobalt status: {status}")
 
         except Exception as e:
-            logger.error(f"Error downloading Instagram media: {str(e)}")
-            return None
+            logger.error(f"Error downloading Instagram media via Cobalt: {str(e)}")
+            # Fallback to yt-dlp for single images (known Cobalt limitation)
+            logger.info("Trying yt-dlp fallback for Instagram single image")
+            return await self._download_instagram_via_ytdlp(url)
 
     def cleanup(self, file_path: str) -> None:
         """Remove downloaded file"""
