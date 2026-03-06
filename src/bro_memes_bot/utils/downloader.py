@@ -123,12 +123,12 @@ class MediaDownloader:
         return await self._download_with_ytdl(url, self.yt_opts)
             
     async def download_tiktok(self, url: str) -> Optional[Dict]:
-        """Download TikTok video"""
         result = await self._download_with_ytdl(url, self.base_opts)
         if result and Path(result['file_path']).exists():
             return result
-        logger.info("Standard TikTok download failed, trying slideshow mode")
-        return await self._download_tiktok_slideshow(url)
+        # yt-dlp cannot handle /photo/ posts — fall back to Cobalt
+        logger.info("Standard TikTok download failed, trying Cobalt fallback")
+        return await self._download_tiktok_via_cobalt(url)
 
     async def download_twitter(self, url: str) -> Optional[Dict]:
         """Download Twitter/X video"""
