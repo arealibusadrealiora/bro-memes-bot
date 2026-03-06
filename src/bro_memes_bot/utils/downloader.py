@@ -84,6 +84,70 @@ class MediaDownloader:
             logger.error(f"Error downloading from {url}: {str(e)}")
             return None
 
+    async def _download_tiktok_via_cobalt(self, url: str) -> Optional[Dict]:
+        """
+        Fallback for TikTok photo/slideshow posts that yt-dlp cannot handle.
+        Uses Cobalt API, which supports /photo/ URLs and returns a picker for slideshows.
+        """
+        try:
+            data = await self.cobalt_client.get_media_info(url)
+            if not data:
+                raise ValueError("Cobalt returned no data")
+
+            status = data.get('status', '')
+
+            # Slideshow / carousel
+            if status == 'picker':
+                items = data.get('picker', [])
+                if not items:
+                    raise ValueError("Cobalt picker is empty")
+
+                downloaded: List[str] = []
+                for i, item in enumerate(items):
+                    item_url = item.get('url')
+                    if not item_url:
+                        continue
+                    ext = 'mp4' if item.get('type') == 'video' else 'jpg'
+                    fp = await self._fetch_file(item_url, f'tiktok_slide_{i}.{ext}')
+                    if fp:
+                        downloaded.append(fp)
+
+                if not downloaded:
+                    raise ValueError("Failed to download any slideshow items")
+
+                if len(downloaded) == 1:
+                    return {
+                        'file_path': downloaded[0],
+                        'title': 'TikTok post',
+                        'duration': None, 'thumbnail': None, 'uploader': None,
+                    }
+                return {
+                    'files': downloaded,
+                    'title': 'TikTok slideshow',
+                    'duration': None, 'thumbnail': None, 'uploader': None,
+                }
+
+            # Single video via Cobalt
+            if status in ('redirect', 'tunnel'):
+                single_url = data.get('url')
+                if not single_url:
+                    raise ValueError("Cobalt response missing URL")
+                filename = data.get('filename', 'tiktok_video.mp4')
+                fp = await self._fetch_file(single_url, filename)
+                if not fp:
+                    raise ValueError("Failed to download file")
+                return {
+                    'file_path': fp,
+                    'title': self._sanitize_title(Path(filename).stem),
+                    'duration': None, 'thumbnail': None, 'uploader': None,
+                }
+
+            raise ValueError(f"Unexpected Cobalt status: {status}")
+
+        except Exception as e:
+            logger.error(f"Error downloading TikTok via Cobalt: {str(e)}")
+            return None        
+
     async def _download_tiktok_slideshow(self, url: str) -> Optional[Dict]:
         """Fallback for TikTok image slideshows."""
         try:
