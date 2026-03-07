@@ -1,0 +1,27 @@
+# .netrc Configuration Instructions
+
+## IMPORTANT: .netrc Format Rules
+- NO comments allowed in the actual .netrc file (they break parsing)
+- Each credential must be on a single line
+- Format: machine <host> login <username> password <password>
+
+## Instagram Authentication Setup
+
+1. Edit .netrc and add this line (replace with your credentials):
+   machine instagram login YOUR_INSTAGRAM_USERNAME password YOUR_INSTAGRAM_PASSWORD
+
+2. Example with real credentials:
+   machine instagram login testbot2026 password MySecureP@ssw0rd
+
+3. Set proper permissions:
+   chmod 600 .netrc
+
+## Security Warning
+- Use a SECONDARY Instagram account, NOT your main account
+- Instagram may rate-limit or block accounts used for automation
+- DO NOT commit .netrc with real credentials to Git (already in .gitignore)
+
+## Troubleshooting
+- If you see "Failed to parse .netrc: bad follower token", remove ALL comments from .netrc
+- Keep only the machine lines with credentials
+- Each line should start with "machine"
