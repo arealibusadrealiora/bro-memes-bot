@@ -16,3 +16,4 @@ ENV/
 
 # Project specific
 keys.json
+.netrc  # Contains Instagram/YouTube credentials - do not commit real credentials!
