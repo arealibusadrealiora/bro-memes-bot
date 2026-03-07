@@ -24,14 +24,14 @@ class MediaDownloader:
             'format': 'best[ext=mp4]/best',
             'outtmpl': str(Path(tempfile.gettempdir()) / '%(extractor)s_%(id)s.%(ext)s'),
             'max_filesize': self.MAX_FILE_SIZE,
+            'netrc_location': os.getenv('NETRC_LOCATION'),
+            'usenetrc': True,
         }
-        
-        # Combine options to reduce duplication
+
+        # YouTube-specific options (adds cache dir)
         self.yt_opts = {
             **self.base_opts,
-            'netrc_location': os.getenv('NETRC_LOCATION'),
             'cachedir': os.getenv('CACHE_DIR'),
-            'usenetrc': True,
         }
         
         self.cobalt_client = CobaltClient(
@@ -207,6 +207,8 @@ class MediaDownloader:
     async def _download_instagram_via_ytdlp(self, url: str) -> Optional[Dict]:
         """Fallback method to download Instagram media using yt-dlp (for single images)"""
         try:
+            logger.info(f"Using .netrc from: {self.base_opts.get('netrc_location')}")
+            logger.info(f"usenetrc enabled: {self.base_opts.get('usenetrc')}")
             return await self._download_with_ytdl(url, self.base_opts)
         except Exception as e:
             logger.error(f"Error downloading Instagram via yt-dlp: {str(e)}")
