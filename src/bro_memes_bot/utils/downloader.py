@@ -20,20 +20,31 @@ class MediaDownloader:
     MAX_TITLE_LENGTH = 64
     
     def __init__(self):
+        # Check if Instagram cookies file exists
+        cookies_file = os.getenv('INSTAGRAM_COOKIES_FILE', '/app/instagram_cookies.txt')
+
         self.base_opts = {
             'format': 'best[ext=mp4]/best',
             'outtmpl': str(Path(tempfile.gettempdir()) / '%(extractor)s_%(id)s.%(ext)s'),
             'max_filesize': self.MAX_FILE_SIZE,
-            'netrc_location': os.getenv('NETRC_LOCATION'),
-            'usenetrc': True,
         }
+
+        # Add cookies if file exists (for Instagram)
+        if Path(cookies_file).exists():
+            logger.info(f"Using Instagram cookies from: {cookies_file}")
+            self.base_opts['cookiefile'] = cookies_file
+        else:
+            # Fallback to netrc (though it's currently broken for Instagram)
+            logger.warning("No Instagram cookies found, falling back to .netrc (may not work)")
+            self.base_opts['netrc_location'] = os.getenv('NETRC_LOCATION')
+            self.base_opts['usenetrc'] = True
 
         # YouTube-specific options (adds cache dir)
         self.yt_opts = {
             **self.base_opts,
             'cachedir': os.getenv('CACHE_DIR'),
         }
-        
+
         self.cobalt_client = CobaltClient(
             base_url=os.getenv('COBALT_BASE_URL', 'http://localhost:9000/'),
             api_key=os.getenv('COBALT_API_KEY')

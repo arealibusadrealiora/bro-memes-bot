@@ -7,6 +7,7 @@ services:
     env_file: .env
     volumes:
       - ./.netrc:/app/.netrc
+      - ./instagram_cookies.txt:/app/instagram_cookies.txt:ro
       - cache:/app/cache
     depends_on:
       cobalt:
