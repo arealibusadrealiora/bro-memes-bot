@@ -224,31 +224,49 @@ class MediaDownloader:
             instagram_opts = {
                 **self.base_opts,
                 'format': 'best',
+                'ignore_no_formats_error': True,
             }
 
-            # Try to extract info first to check if it's an image
-            with yt_dlp.YoutubeDL({**instagram_opts, 'skip_download': True}) as ydl:
-                info = ydl.extract_info(url, download=False)
-                logger.info(f"Instagram media info: formats={len(info.get('formats', []))}, url={bool(info.get('url'))}")
+            # Try to extract info - handle "No video formats" error
+            info = None
+            try:
+                with yt_dlp.YoutubeDL({**instagram_opts, 'skip_download': True}) as ydl:
+                    info = ydl.extract_info(url, download=False)
+            except yt_dlp.utils.DownloadError as e:
+                if "No video formats found" in str(e):
+                    logger.info("No video formats - likely an image. Trying alternative extraction...")
+                    # Try with minimal config to just get URL
+                    try:
+                        with yt_dlp.YoutubeDL({'cookiefile': self.base_opts.get('cookiefile')}) as ydl:
+                            info = ydl.extract_info(url, download=False)
+                    except:
+                        pass
+                else:
+                    raise
 
-                # If no video formats but has direct URL (image)
-                if not info.get('formats') and info.get('url'):
-                    logger.info("Detected single image, downloading directly from URL")
-                    image_url = info['url']
-                    temp_file = Path(tempfile.gettempdir()) / f"instagram_{info.get('id', 'image')}.jpg"
+            if not info:
+                raise ValueError("Failed to extract Instagram media info")
 
-                    async with httpx.AsyncClient(follow_redirects=True, timeout=60) as client:
-                        response = await client.get(image_url)
-                        response.raise_for_status()
-                        temp_file.write_bytes(response.content)
+            logger.info(f"Instagram media info: formats={len(info.get('formats', []))}, url={bool(info.get('url'))}")
 
-                    return {
-                        'file_path': str(temp_file),
-                        'title': self._sanitize_title(info.get('title', 'Instagram post')),
-                        'duration': None,
-                        'thumbnail': None,
-                        'uploader': info.get('uploader'),
-                    }
+            # If no video formats but has direct URL (image)
+            if not info.get('formats') and info.get('url'):
+                logger.info("Detected single image, downloading directly from URL")
+                image_url = info['url']
+                temp_file = Path(tempfile.gettempdir()) / f"instagram_{info.get('id', 'image')}.jpg"
+
+                async with httpx.AsyncClient(follow_redirects=True, timeout=60) as client:
+                    response = await client.get(image_url)
+                    response.raise_for_status()
+                    temp_file.write_bytes(response.content)
+
+                return {
+                    'file_path': str(temp_file),
+                    'title': self._sanitize_title(info.get('title', 'Instagram post')),
+                    'duration': None,
+                    'thumbnail': None,
+                    'uploader': info.get('uploader'),
+                }
 
             # Has formats, download normally
             return await self._download_with_ytdl(url, instagram_opts)
