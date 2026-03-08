@@ -17,3 +17,4 @@ ENV/
 # Project specific
 keys.json
 .netrc  # Contains Instagram/YouTube credentials - do not commit real credentials!
+instagram_cookies.txt  # Instagram browser cookies - do not commit!
