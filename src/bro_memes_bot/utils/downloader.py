@@ -220,13 +220,39 @@ class MediaDownloader:
         try:
             logger.info(f"Using cookies from: {self.base_opts.get('cookiefile')}")
 
-            # Instagram-specific options for images
+            # Instagram-specific options
             instagram_opts = {
                 **self.base_opts,
-                'format': 'best',  # Works for both images and videos
+                'format': 'best',
             }
 
+            # Try to extract info first to check if it's an image
+            with yt_dlp.YoutubeDL({**instagram_opts, 'skip_download': True}) as ydl:
+                info = ydl.extract_info(url, download=False)
+                logger.info(f"Instagram media info: formats={len(info.get('formats', []))}, url={bool(info.get('url'))}")
+
+                # If no video formats but has direct URL (image)
+                if not info.get('formats') and info.get('url'):
+                    logger.info("Detected single image, downloading directly from URL")
+                    image_url = info['url']
+                    temp_file = Path(tempfile.gettempdir()) / f"instagram_{info.get('id', 'image')}.jpg"
+
+                    async with httpx.AsyncClient(follow_redirects=True, timeout=60) as client:
+                        response = await client.get(image_url)
+                        response.raise_for_status()
+                        temp_file.write_bytes(response.content)
+
+                    return {
+                        'file_path': str(temp_file),
+                        'title': self._sanitize_title(info.get('title', 'Instagram post')),
+                        'duration': None,
+                        'thumbnail': None,
+                        'uploader': info.get('uploader'),
+                    }
+
+            # Has formats, download normally
             return await self._download_with_ytdl(url, instagram_opts)
+
         except Exception as e:
             logger.error(f"Error downloading Instagram via yt-dlp: {str(e)}")
             return None
