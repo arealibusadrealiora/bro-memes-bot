@@ -8,6 +8,12 @@ import httpx
 from .cobalt_client import CobaltClient
 import re
 
+try:
+    from parth_dl import InstagramDownloader
+    PARTH_DL_AVAILABLE = True
+except ImportError:
+    PARTH_DL_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp'}
@@ -215,64 +221,51 @@ class MediaDownloader:
                 result['title'] = self._sanitize_title(f"Twitter_video_by_{uploader}")
         return result
 
-    async def _download_instagram_via_ytdlp(self, url: str) -> Optional[Dict]:
-        """Fallback method to download Instagram media using yt-dlp (for single images)"""
-        try:
-            logger.info(f"Using cookies from: {self.base_opts.get('cookiefile')}")
+    async def _download_instagram_via_parth(self, url: str) -> Optional[Dict]:
+        """Download Instagram media using parth-dl (no login required)"""
+        if not PARTH_DL_AVAILABLE:
+            logger.error("parth-dl not available, cannot download Instagram media")
+            return None
 
-            # Instagram-specific options
-            instagram_opts = {
-                **self.base_opts,
-                'format': 'best',
-                'ignore_no_formats_error': True,
+        try:
+            logger.info("Using parth-dl for Instagram download (no login required)")
+
+            # Create downloader instance
+            dl = InstagramDownloader(verbose=False)
+
+            # Get media info first
+            info = dl.get_info(url)
+            if not info:
+                raise ValueError("Failed to get Instagram media info")
+
+            logger.info(f"Instagram media type: {info.get('type', 'unknown')}")
+
+            # Download to temp directory
+            temp_dir = Path(tempfile.gettempdir())
+            output_path = temp_dir / f"instagram_{info.get('id', 'media')}"
+
+            # parth-dl downloads synchronously, run in executor
+            import asyncio
+            await asyncio.to_thread(dl.download, url, output=str(output_path))
+
+            # Find downloaded file (parth-dl adds extension automatically)
+            downloaded_files = list(temp_dir.glob(f"instagram_{info.get('id', 'media')}*"))
+
+            if not downloaded_files:
+                raise ValueError("Downloaded file not found")
+
+            file_path = str(downloaded_files[0])
+
+            return {
+                'file_path': file_path,
+                'title': self._sanitize_title(info.get('title', 'Instagram post')),
+                'duration': None,
+                'thumbnail': None,
+                'uploader': info.get('uploader'),
             }
 
-            # Try to extract info - handle "No video formats" error
-            info = None
-            try:
-                with yt_dlp.YoutubeDL({**instagram_opts, 'skip_download': True}) as ydl:
-                    info = ydl.extract_info(url, download=False)
-            except yt_dlp.utils.DownloadError as e:
-                if "No video formats found" in str(e):
-                    logger.info("No video formats - likely an image. Trying alternative extraction...")
-                    # Try with minimal config to just get URL
-                    try:
-                        with yt_dlp.YoutubeDL({'cookiefile': self.base_opts.get('cookiefile')}) as ydl:
-                            info = ydl.extract_info(url, download=False)
-                    except:
-                        pass
-                else:
-                    raise
-
-            if not info:
-                raise ValueError("Failed to extract Instagram media info")
-
-            logger.info(f"Instagram media info: formats={len(info.get('formats', []))}, url={bool(info.get('url'))}")
-
-            # If no video formats but has direct URL (image)
-            if not info.get('formats') and info.get('url'):
-                logger.info("Detected single image, downloading directly from URL")
-                image_url = info['url']
-                temp_file = Path(tempfile.gettempdir()) / f"instagram_{info.get('id', 'image')}.jpg"
-
-                async with httpx.AsyncClient(follow_redirects=True, timeout=60) as client:
-                    response = await client.get(image_url)
-                    response.raise_for_status()
-                    temp_file.write_bytes(response.content)
-
-                return {
-                    'file_path': str(temp_file),
-                    'title': self._sanitize_title(info.get('title', 'Instagram post')),
-                    'duration': None,
-                    'thumbnail': None,
-                    'uploader': info.get('uploader'),
-                }
-
-            # Has formats, download normally
-            return await self._download_with_ytdl(url, instagram_opts)
-
         except Exception as e:
-            logger.error(f"Error downloading Instagram via yt-dlp: {str(e)}")
+            logger.error(f"Error downloading Instagram via parth-dl: {str(e)}")
             return None
 
     async def download_instagram(self, url: str) -> Optional[Dict]:
@@ -339,9 +332,9 @@ class MediaDownloader:
 
         except Exception as e:
             logger.error(f"Error downloading Instagram media via Cobalt: {str(e)}")
-            # Fallback to yt-dlp for single images (known Cobalt limitation)
-            logger.info("Trying yt-dlp fallback for Instagram single image")
-            return await self._download_instagram_via_ytdlp(url)
+            # Fallback to parth-dl (no login required)
+            logger.info("Trying parth-dl fallback for Instagram")
+            return await self._download_instagram_via_parth(url)
 
     def cleanup(self, file_path: str) -> None:
         """Remove downloaded file"""
