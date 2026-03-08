@@ -218,9 +218,15 @@ class MediaDownloader:
     async def _download_instagram_via_ytdlp(self, url: str) -> Optional[Dict]:
         """Fallback method to download Instagram media using yt-dlp (for single images)"""
         try:
-            logger.info(f"Using .netrc from: {self.base_opts.get('netrc_location')}")
-            logger.info(f"usenetrc enabled: {self.base_opts.get('usenetrc')}")
-            return await self._download_with_ytdl(url, self.base_opts)
+            logger.info(f"Using cookies from: {self.base_opts.get('cookiefile')}")
+
+            # Instagram-specific options for images
+            instagram_opts = {
+                **self.base_opts,
+                'format': 'best',  # Works for both images and videos
+            }
+
+            return await self._download_with_ytdl(url, instagram_opts)
         except Exception as e:
             logger.error(f"Error downloading Instagram via yt-dlp: {str(e)}")
             return None
