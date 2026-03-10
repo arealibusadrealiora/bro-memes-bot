@@ -9,10 +9,10 @@ from .cobalt_client import CobaltClient
 import re
 
 try:
-    from parth_dl import InstagramDownloader
-    PARTH_DL_AVAILABLE = True
+    import instaloader
+    INSTALOADER_AVAILABLE = True
 except ImportError:
-    PARTH_DL_AVAILABLE = False
+    INSTALOADER_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -221,51 +221,88 @@ class MediaDownloader:
                 result['title'] = self._sanitize_title(f"Twitter_video_by_{uploader}")
         return result
 
-    async def _download_instagram_via_parth(self, url: str) -> Optional[Dict]:
-        """Download Instagram media using parth-dl (no login required)"""
-        if not PARTH_DL_AVAILABLE:
-            logger.error("parth-dl not available, cannot download Instagram media")
+    async def _download_instagram_via_instaloader(self, url: str) -> Optional[Dict]:
+        """Download Instagram media using instaloader (no login required)"""
+        if not INSTALOADER_AVAILABLE:
+            logger.error("instaloader not available, cannot download Instagram media")
             return None
 
         try:
-            logger.info("Using parth-dl for Instagram download (no login required)")
+            logger.info("Using instaloader for Instagram download (no login required)")
+            import asyncio
 
-            # Create downloader instance
-            dl = InstagramDownloader(verbose=False)
+            # Create instaloader instance
+            loader = instaloader.Instaloader(
+                download_videos=True,
+                download_video_thumbnails=False,
+                download_geotags=False,
+                download_comments=False,
+                save_metadata=False,
+                compress_json=False,
+                post_metadata_txt_pattern='',
+            )
 
-            # Get media info first
-            info = dl.get_info(url)
-            if not info:
-                raise ValueError("Failed to get Instagram media info")
+            # Extract shortcode from URL
+            # Instagram URLs: https://www.instagram.com/p/SHORTCODE/ or /reel/SHORTCODE/
+            import re
+            match = re.search(r'instagram\.com/(?:p|reel)/([A-Za-z0-9_-]+)', url)
+            if not match:
+                raise ValueError(f"Could not extract shortcode from URL: {url}")
 
-            logger.info(f"Instagram media type: {info.get('type', 'unknown')}")
+            shortcode = match.group(1)
+            logger.info(f"Extracted Instagram shortcode: {shortcode}")
+
+            # Get post object (synchronous operation)
+            post = await asyncio.to_thread(
+                instaloader.Post.from_shortcode,
+                loader.context,
+                shortcode
+            )
 
             # Download to temp directory
             temp_dir = Path(tempfile.gettempdir())
-            output_path = temp_dir / f"instagram_{info.get('id', 'media')}"
+            target_dir = temp_dir / f"instagram_{shortcode}"
+            target_dir.mkdir(exist_ok=True)
 
-            # parth-dl downloads synchronously, run in executor
-            import asyncio
-            await asyncio.to_thread(dl.download, url, output=str(output_path))
+            # Download post (synchronous operation)
+            await asyncio.to_thread(
+                loader.download_post,
+                post,
+                target=str(target_dir)
+            )
 
-            # Find downloaded file (parth-dl adds extension automatically)
-            downloaded_files = list(temp_dir.glob(f"instagram_{info.get('id', 'media')}*"))
+            # Find downloaded files
+            downloaded_files = []
+            for ext in ['.jpg', '.jpeg', '.png', '.webp', '.mp4']:
+                downloaded_files.extend(list(target_dir.glob(f'*{ext}')))
 
             if not downloaded_files:
-                raise ValueError("Downloaded file not found")
+                raise ValueError("No media files found after download")
 
-            file_path = str(downloaded_files[0])
+            # Sort by name to maintain order
+            downloaded_files.sort()
 
+            # Single file
+            if len(downloaded_files) == 1:
+                return {
+                    'file_path': str(downloaded_files[0]),
+                    'title': self._sanitize_title(post.caption[:100] if post.caption else 'Instagram post'),
+                    'duration': post.video_duration if post.is_video else None,
+                    'thumbnail': None,
+                    'uploader': post.owner_username,
+                }
+
+            # Multiple files (carousel)
             return {
-                'file_path': file_path,
-                'title': self._sanitize_title(info.get('title', 'Instagram post')),
+                'files': [str(f) for f in downloaded_files],
+                'title': self._sanitize_title(post.caption[:100] if post.caption else 'Instagram carousel'),
                 'duration': None,
                 'thumbnail': None,
-                'uploader': info.get('uploader'),
+                'uploader': post.owner_username,
             }
 
         except Exception as e:
-            logger.error(f"Error downloading Instagram via parth-dl: {str(e)}")
+            logger.error(f"Error downloading Instagram via instaloader: {str(e)}")
             return None
 
     async def download_instagram(self, url: str) -> Optional[Dict]:
@@ -332,9 +369,9 @@ class MediaDownloader:
 
         except Exception as e:
             logger.error(f"Error downloading Instagram media via Cobalt: {str(e)}")
-            # Fallback to parth-dl (no login required)
-            logger.info("Trying parth-dl fallback for Instagram")
-            return await self._download_instagram_via_parth(url)
+            # Fallback to instaloader (no login required)
+            logger.info("Trying instaloader fallback for Instagram")
+            return await self._download_instagram_via_instaloader(url)
 
     def cleanup(self, file_path: str) -> None:
         """Remove downloaded file"""
