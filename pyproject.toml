@@ -9,7 +9,6 @@ dependencies = [
     "python-telegram-bot[callback-data]>=21.7",
     "python-dotenv>=1.0.1",
     "httpx>=0.27.2",
-    "instaloader>=4.10",
 ]
 
 [build-system]
