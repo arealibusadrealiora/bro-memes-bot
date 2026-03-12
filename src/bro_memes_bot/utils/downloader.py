@@ -215,104 +215,14 @@ class MediaDownloader:
                 result['title'] = self._sanitize_title(f"Twitter_video_by_{uploader}")
         return result
 
-    async def _download_instagram_via_scraping(self, url: str) -> Optional[Dict]:
-        """Download Instagram media by scraping the HTML page (no login required)"""
-        try:
-            logger.info("Using HTML scraping for Instagram download (no login required)")
-            import json
-
-            # Fetch the Instagram page HTML
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-            }
-
-            async with httpx.AsyncClient(follow_redirects=True, timeout=30, headers=headers) as client:
-                response = await client.get(url)
-                response.raise_for_status()
-                html = response.text
-
-            # Extract JSON data from HTML
-            # Instagram embeds data in <script type="application/ld+json">
-            match = re.search(r'<script type="application/ld\+json">(.+?)</script>', html, re.DOTALL)
-            if not match:
-                raise ValueError("Could not find JSON data in Instagram page")
-
-            data = json.loads(match.group(1))
-
-            # Extract image/video URLs
-            media_urls = []
-            if isinstance(data, dict):
-                # Single post
-                if 'video' in data:
-                    # Video post
-                    for video in data.get('video', []):
-                        content_url = video.get('contentUrl')
-                        if content_url:
-                            media_urls.append(('video', content_url))
-                elif 'image' in data:
-                    # Image post (single or carousel)
-                    images = data.get('image', [])
-                    if isinstance(images, str):
-                        media_urls.append(('image', images))
-                    elif isinstance(images, list):
-                        for img in images:
-                            media_urls.append(('image', img))
-
-            if not media_urls:
-                raise ValueError("No media URLs found in Instagram page")
-
-            # Download media files
-            downloaded_files = []
-            for i, (media_type, media_url) in enumerate(media_urls):
-                ext = 'mp4' if media_type == 'video' else 'jpg'
-                filename = f'instagram_scraped_{i}.{ext}'
-                file_path = await self._fetch_file(media_url, filename)
-                if file_path:
-                    downloaded_files.append(file_path)
-
-            if not downloaded_files:
-                raise ValueError("Failed to download any media files")
-
-            # Get title from caption if available
-            title = 'Instagram post'
-            caption = data.get('caption', data.get('description', ''))
-            if caption:
-                title = self._sanitize_title(caption[:100])
-
-            # Single file
-            if len(downloaded_files) == 1:
-                return {
-                    'file_path': downloaded_files[0],
-                    'title': title,
-                    'duration': None,
-                    'thumbnail': None,
-                    'uploader': data.get('author', {}).get('name') if isinstance(data.get('author'), dict) else None,
-                }
-
-            # Multiple files (carousel)
-            return {
-                'files': downloaded_files,
-                'title': title,
-                'duration': None,
-                'thumbnail': None,
-                'uploader': data.get('author', {}).get('name') if isinstance(data.get('author'), dict) else None,
-            }
-
-        except Exception as e:
-            logger.error(f"Error downloading Instagram via scraping: {str(e)}")
-            return None
-
     async def download_instagram(self, url: str) -> Optional[Dict]:
         """
-        Download Instagram media via Cobalt API (videos, carousels) or yt-dlp fallback (single images).
+        Download Instagram media via Cobalt API (reels, videos, carousels).
+        Note: Single images are not supported on self-hosted Cobalt without cookies/proxy.
         Returns either:
-          {'file_path': str, ...}            — single video or image
+          {'file_path': str, ...}            — single video
           {'files': [str, str, ...], ...}    — carousel
+          None                               — on error (e.g., single image posts)
         """
         try:
             data = await self.cobalt_client.get_media_info(url)
@@ -371,9 +281,8 @@ class MediaDownloader:
 
         except Exception as e:
             logger.error(f"Error downloading Instagram media via Cobalt: {str(e)}")
-            # Fallback to HTML scraping (no login required)
-            logger.info("Trying HTML scraping fallback for Instagram")
-            return await self._download_instagram_via_scraping(url)
+            logger.info("Instagram download failed - single images are not supported on self-hosted Cobalt")
+            return None
 
     def cleanup(self, file_path: str) -> None:
         """Remove downloaded file"""
