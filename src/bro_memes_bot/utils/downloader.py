@@ -217,12 +217,11 @@ class MediaDownloader:
 
     async def download_instagram(self, url: str) -> Optional[Dict]:
         """
-        Download Instagram media via Cobalt API (reels, videos, carousels).
-        Note: Single images are not supported on self-hosted Cobalt without cookies/proxy.
+        Download Instagram media via Cobalt API (reels and videos only).
+        Note: Single images and carousels are not supported on self-hosted Cobalt without cookies/proxy.
         Returns either:
-          {'file_path': str, ...}            — single video
-          {'files': [str, str, ...], ...}    — carousel
-          None                               — on error (e.g., single image posts)
+          {'file_path': str, ...}            — single video/reel
+          None                               — on error (e.g., single images, carousels)
         """
         try:
             data = await self.cobalt_client.get_media_info(url)
@@ -231,38 +230,7 @@ class MediaDownloader:
 
             status = data.get('status', '')
 
-            # Carousel
-            if status == 'picker':
-                items = data.get('picker', [])
-                if not items:
-                    raise ValueError("Cobalt returned picker with no items")
-
-                downloaded: List[str] = []
-                for i, item in enumerate(items):
-                    item_url = item.get('url')
-                    if not item_url:
-                        continue
-                    ext = 'mp4' if item.get('type') == 'video' else 'jpg'
-                    fp = await self._fetch_file(item_url, f'instagram_carousel_{i}.{ext}')
-                    if fp:
-                        downloaded.append(fp)
-
-                if not downloaded:
-                    raise ValueError("Failed to download any carousel items")
-
-                if len(downloaded) == 1:
-                    return {
-                        'file_path': downloaded[0],
-                        'title': 'Instagram post',
-                        'duration': None, 'thumbnail': None, 'uploader': None,
-                    }
-                return {
-                    'files': downloaded,
-                    'title': 'Instagram carousel',
-                    'duration': None, 'thumbnail': None, 'uploader': None,
-                }
-
-            # Single file
+            # Single video/reel only
             if status in ('redirect', 'tunnel'):
                 single_url = data.get('url')
                 if not single_url:
@@ -281,7 +249,7 @@ class MediaDownloader:
 
         except Exception as e:
             logger.error(f"Error downloading Instagram media via Cobalt: {str(e)}")
-            logger.info("Instagram download failed - single images are not supported on self-hosted Cobalt")
+            logger.info("Instagram download failed - only reels/videos are supported, not single images or carousels")
             return None
 
     def cleanup(self, file_path: str) -> None:
