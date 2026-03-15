@@ -20,29 +20,18 @@ class MediaDownloader:
     MAX_TITLE_LENGTH = 64
     
     def __init__(self):
-        # Check if Instagram cookies file exists
-        cookies_file = os.getenv('INSTAGRAM_COOKIES_FILE', '/app/instagram_cookies.txt')
-
         self.base_opts = {
-            'format': 'best[ext=mp4]/best',
+            'format': 'best[ext=mp4]',
             'outtmpl': str(Path(tempfile.gettempdir()) / '%(extractor)s_%(id)s.%(ext)s'),
             'max_filesize': self.MAX_FILE_SIZE,
         }
 
-        # Add cookies if file exists (for Instagram)
-        if Path(cookies_file).exists():
-            logger.info(f"Using Instagram cookies from: {cookies_file}")
-            self.base_opts['cookiefile'] = cookies_file
-        else:
-            # Fallback to netrc (though it's currently broken for Instagram)
-            logger.warning("No Instagram cookies found, falling back to .netrc (may not work)")
-            self.base_opts['netrc_location'] = os.getenv('NETRC_LOCATION')
-            self.base_opts['usenetrc'] = True
-
-        # YouTube-specific options (adds cache dir)
+        # Combine options to reduce duplication
         self.yt_opts = {
             **self.base_opts,
+            'netrc_location': os.getenv('NETRC_LOCATION'),
             'cachedir': os.getenv('CACHE_DIR'),
+            'usenetrc': True,
         }
 
         self.cobalt_client = CobaltClient(
@@ -56,7 +45,7 @@ class MediaDownloader:
         clean_title = re.sub(r'[^\w\s,.!?-]', '', title)
         # Replace multiple spaces with single space
         clean_title = re.sub(r'\s+', ' ', clean_title).strip()
-        return clean_title[:self.MAX_TITLE_LENGTH] if clean_title else 'media'
+        return clean_title[:self.MAX_TITLE_LENGTH] if clean_title else 'video'
 
     async def _fetch_file(self, url: str, filename: str) -> Optional[str]:
         """Download a file from a direct URL, return local path or None."""
@@ -216,40 +205,29 @@ class MediaDownloader:
         return result
 
     async def download_instagram(self, url: str) -> Optional[Dict]:
-        """
-        Download Instagram media via Cobalt API (reels and videos only).
-        Note: Single images and carousels are not supported on self-hosted Cobalt without cookies/proxy.
-        Returns either:
-          {'file_path': str, ...}            — single video/reel
-          None                               — on error (e.g., single images, carousels)
-        """
+        """Download Instagram media using Cobalt API"""
         try:
-            data = await self.cobalt_client.get_media_info(url)
-            if not data:
-                raise ValueError("Failed to get media info from Cobalt API")
+            media_info = await self.cobalt_client.get_media_url(url)
+            if not media_info:
+                raise ValueError("Failed to get media URL from Cobalt API")
 
-            status = data.get('status', '')
+            temp_file = Path(tempfile.gettempdir()) / media_info['filename']
 
-            # Single video/reel only
-            if status in ('redirect', 'tunnel'):
-                single_url = data.get('url')
-                if not single_url:
-                    raise ValueError("Cobalt response missing URL")
-                filename = data.get('filename', 'instagram_media')
-                fp = await self._fetch_file(single_url, filename)
-                if not fp:
-                    raise ValueError("Failed to download media file")
-                return {
-                    'file_path': fp,
-                    'title': self._sanitize_title(Path(filename).stem),
-                    'duration': None, 'thumbnail': None, 'uploader': None,
-                }
+            async with httpx.AsyncClient() as client:
+                response = await client.get(media_info['url'])
+                response.raise_for_status()
+                # Use synchronous write since we're writing the entire content at once
+                temp_file.write_bytes(response.content)
 
-            raise ValueError(f"Unexpected Cobalt status: {status}")
+            return {
+                'file_path': str(temp_file),
+                'title': self._sanitize_title(temp_file.stem),
+                'duration': None,
+                'thumbnail': None
+            }
 
         except Exception as e:
-            logger.error(f"Error downloading Instagram media via Cobalt: {str(e)}")
-            logger.info("Instagram download failed - only reels/videos are supported, not single images or carousels")
+            logger.error(f"Error downloading Instagram media: {str(e)}")
             return None
 
     def cleanup(self, file_path: str) -> None:
