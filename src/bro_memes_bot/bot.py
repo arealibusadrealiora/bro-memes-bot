@@ -29,6 +29,69 @@ def _is_image(path: str) -> bool:
 
 async def _send_media(update: Update, context, chat_id: int, result: dict) -> None:
     """Route result to the correct Telegram send method."""
+    files = result.get('files')  # present only for carousels
+
+    # Carousel
+    if files and len(files) > 1:
+        # Show upload action while preparing media group
+        await context.bot.send_chat_action(
+            chat_id=chat_id,
+            action=constants.ChatAction.UPLOAD_PHOTO
+        )
+
+        # Create caption
+        caption = f"🎥 {result['title']}"
+        if result.get('uploader'):
+            caption += f"\n👤 {result['uploader']}"
+        if result.get('duration'):
+            try:
+                duration = float(result['duration'])
+                minutes = int(duration // 60)
+                seconds = int(duration % 60)
+                caption += f"\n⏱ {minutes}:{seconds:02d}"
+            except (TypeError, ValueError):
+                pass
+
+        media_group = []
+        handles = []
+        for i, fp in enumerate(files):
+            fh = open(fp, 'rb')
+            handles.append((fh, fp))
+            kw = {'caption': caption} if i == 0 else {}
+            if _is_image(fp):
+                media_group.append(InputMediaPhoto(media=fh, **kw))
+            else:
+                media_group.append(InputMediaVideo(media=fh, supports_streaming=True, **kw))
+        try:
+            # Send another upload action as the previous one might have expired
+            await context.bot.send_chat_action(
+                chat_id=chat_id,
+                action=constants.ChatAction.UPLOAD_PHOTO
+            )
+            await update.message.reply_media_group(media=media_group)
+        finally:
+            for fh, fp in handles:
+                fh.close()
+                downloader.cleanup(fp)
+        return
+
+    # Single file
+    file_path = result.get('file_path') or (files[0] if files else None)
+    if not file_path:
+        raise ValueError("No file path in result")
+
+    # Show upload video action while uploading
+    if _is_image(file_path):
+        await context.bot.send_chat_action(
+            chat_id=chat_id,
+            action=constants.ChatAction.UPLOAD_PHOTO
+        )
+    else:
+        await context.bot.send_chat_action(
+            chat_id=chat_id,
+            action=constants.ChatAction.UPLOAD_VIDEO
+        )
+
     # Create caption
     caption = f"🎥 {result['title']}"
     if result.get('uploader'):
@@ -42,56 +105,34 @@ async def _send_media(update: Update, context, chat_id: int, result: dict) -> No
         except (TypeError, ValueError):
             pass
 
-    files = result.get('files')  # present only for carousels
-
-    # Carousel
-    if files and len(files) > 1:
-        # Show upload action while preparing media group
-        await context.bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.UPLOAD_PHOTO)
-        media_group = []
-        handles = []
-        for i, fp in enumerate(files):
-            fh = open(fp, 'rb')
-            handles.append((fh, fp))
-            kw = {'caption': caption} if i == 0 else {}
-            if _is_image(fp):
-                media_group.append(InputMediaPhoto(media=fh, **kw))
-            else:
-                media_group.append(InputMediaVideo(media=fh, supports_streaming=True, **kw))
-        try:
-            # Send another upload action as the previous one might have expired
-            await context.bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.UPLOAD_PHOTO)
-            await update.message.reply_media_group(media=media_group)
-        finally:
-            for fh, fp in handles:
-                fh.close()
-                downloader.cleanup(fp)
-        return
-
-    # Single file
-    file_path = result.get('file_path') or (files[0] if files else None)
-    if not file_path:
-        raise ValueError("No file path in result")
-
-    # Show upload action while opening file
-    if _is_image(file_path):
-        await context.bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.UPLOAD_PHOTO)
-    else:
-        await context.bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.UPLOAD_VIDEO)
-
-    with open(file_path, 'rb') as f:
+    # Send video with periodic upload status updates
+    with open(file_path, 'rb') as video_file:
         if _is_image(file_path):
             # Send another upload action as the previous one might have expired
-            await context.bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.UPLOAD_PHOTO)
-            await update.message.reply_photo(photo=f, caption=caption)
+            await context.bot.send_chat_action(
+                chat_id=chat_id,
+                action=constants.ChatAction.UPLOAD_PHOTO
+            )
+            await update.message.reply_photo(
+                photo=video_file,
+                caption=caption
+            )
         else:
             # Send another upload action as the previous one might have expired
-            await context.bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.UPLOAD_VIDEO)
-            await update.message.reply_video(
-                video=f, caption=caption,
-                supports_streaming=True,
-                write_timeout=120, read_timeout=60, connect_timeout=None
+            await context.bot.send_chat_action(
+                chat_id=chat_id,
+                action=constants.ChatAction.UPLOAD_VIDEO
             )
+            await update.message.reply_video(
+                video=video_file,
+                caption=caption,
+                supports_streaming=True,
+                write_timeout=120,
+                read_timeout=60,
+                connect_timeout=None
+            )
+
+    # Cleanup
     downloader.cleanup(file_path)
 
 
