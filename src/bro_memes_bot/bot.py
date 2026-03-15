@@ -27,25 +27,26 @@ IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp'}
 def _is_image(path: str) -> bool:
     return Path(path).suffix.lower() in IMAGE_EXTENSIONS
 
-def _build_caption(result: dict) -> str:
-    caption = f"\U0001f3a5 {result['title']}"
-    if result.get('uploader'):
-        caption += f"\n\U0001f464 {result['uploader']}"
-    if result.get('duration'):
-        try:
-            d = float(result['duration'])
-            caption += f"\n\u23f1 {int(d // 60)}:{int(d % 60):02d}"
-        except (TypeError, ValueError):
-            pass
-    return caption
-
 async def _send_media(update: Update, context, chat_id: int, result: dict) -> None:
     """Route result to the correct Telegram send method."""
-    caption = _build_caption(result)
+    # Create caption
+    caption = f"🎥 {result['title']}"
+    if result.get('uploader'):
+        caption += f"\n👤 {result['uploader']}"
+    if result.get('duration'):
+        try:
+            duration = float(result['duration'])
+            minutes = int(duration // 60)
+            seconds = int(duration % 60)
+            caption += f"\n⏱ {minutes}:{seconds:02d}"
+        except (TypeError, ValueError):
+            pass
+
     files = result.get('files')  # present only for carousels
 
     # Carousel
     if files and len(files) > 1:
+        # Show upload action while preparing media group
         await context.bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.UPLOAD_PHOTO)
         media_group = []
         handles = []
@@ -58,6 +59,8 @@ async def _send_media(update: Update, context, chat_id: int, result: dict) -> No
             else:
                 media_group.append(InputMediaVideo(media=fh, supports_streaming=True, **kw))
         try:
+            # Send another upload action as the previous one might have expired
+            await context.bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.UPLOAD_PHOTO)
             await update.message.reply_media_group(media=media_group)
         finally:
             for fh, fp in handles:
@@ -70,11 +73,19 @@ async def _send_media(update: Update, context, chat_id: int, result: dict) -> No
     if not file_path:
         raise ValueError("No file path in result")
 
+    # Show upload action while opening file
+    if _is_image(file_path):
+        await context.bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.UPLOAD_PHOTO)
+    else:
+        await context.bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.UPLOAD_VIDEO)
+
     with open(file_path, 'rb') as f:
         if _is_image(file_path):
+            # Send another upload action as the previous one might have expired
             await context.bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.UPLOAD_PHOTO)
             await update.message.reply_photo(photo=f, caption=caption)
         else:
+            # Send another upload action as the previous one might have expired
             await context.bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.UPLOAD_VIDEO)
             await update.message.reply_video(
                 video=f, caption=caption,
