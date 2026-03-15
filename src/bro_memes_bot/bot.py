@@ -156,10 +156,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     downloader.cleanup(fp)
         else:
             # Single file - original code path
+            file_path = result['file_path']
+            is_image = Path(file_path).suffix.lower() in {'.jpg', '.jpeg', '.png', '.webp'}
+
             # Show upload video action while uploading
             await context.bot.send_chat_action(
                 chat_id=chat_id,
-                action=constants.ChatAction.UPLOAD_VIDEO
+                action=constants.ChatAction.UPLOAD_PHOTO if is_image else constants.ChatAction.UPLOAD_VIDEO
             )
 
             # Create caption
@@ -176,23 +179,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     pass
 
             # Send video with periodic upload status updates
-            with open(result['file_path'], 'rb') as video_file:
+            with open(file_path, 'rb') as video_file:
                 # Send another upload action as the previous one might have expired
                 await context.bot.send_chat_action(
                     chat_id=chat_id,
-                    action=constants.ChatAction.UPLOAD_VIDEO
+                    action=constants.ChatAction.UPLOAD_PHOTO if is_image else constants.ChatAction.UPLOAD_VIDEO
                 )
-                await update.message.reply_video(
-                    video=video_file,
-                    caption=caption,
-                    supports_streaming=True,
-                    write_timeout=120,
-                    read_timeout=60,
-                    connect_timeout=None
-                )
+                if is_image:
+                    await update.message.reply_photo(
+                        photo=video_file,
+                        caption=caption
+                    )
+                else:
+                    await update.message.reply_video(
+                        video=video_file,
+                        caption=caption,
+                        supports_streaming=True,
+                        write_timeout=120,
+                        read_timeout=60,
+                        connect_timeout=None
+                    )
 
             # Cleanup
-            downloader.cleanup(result['file_path'])
+            downloader.cleanup(file_path)
 
         await status_message.delete()
 
